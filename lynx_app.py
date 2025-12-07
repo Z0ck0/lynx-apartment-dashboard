@@ -2304,7 +2304,7 @@ def inject_metric_tooltip_css():
         transform: scale(1.1);
     }
     
-    /* Tooltip (hover) */
+    /* Tooltip (hover + click toggle) */
     .metric-tooltip {
         position: absolute;
         bottom: 100%;
@@ -2325,11 +2325,30 @@ def inject_metric_tooltip_css():
         z-index: 1000;
         opacity: 0;
         pointer-events: none;
-        transition: opacity 0.2s ease;
+        transition: opacity 0.2s ease, visibility 0.2s ease;
+        visibility: hidden;
     }
     
-    .metric-card-container:hover .metric-tooltip {
-        opacity: 1;
+    /* Desktop: Show on hover */
+    @media (hover: hover) and (pointer: fine) {
+        .metric-card-container:hover .metric-tooltip {
+            opacity: 1;
+            visibility: visible;
+            pointer-events: auto;
+        }
+    }
+    
+    /* Show when toggled via click/tap */
+    .metric-tooltip.visible {
+        opacity: 1 !important;
+        visibility: visible !important;
+        pointer-events: auto !important;
+    }
+    
+    /* Active state for icon when tooltip is visible */
+    .metric-info-icon.active {
+        background: rgba(100, 100, 100, 0.9) !important;
+        transform: scale(1.1);
     }
     
     .metric-tooltip-title {
@@ -2480,23 +2499,178 @@ def inject_metric_tooltip_css():
         }
     }
     
-    /* Touch device support */
+    /* Touch device support - disable hover on mobile */
     @media (hover: none) {
         .metric-card-container:hover .metric-tooltip {
             opacity: 0;
+            visibility: hidden;
         }
+        
+        /* Larger touch targets on mobile */
+        .metric-info-icon {
+            width: 24px !important;
+            height: 24px !important;
+            font-size: 14px !important;
+            min-width: 44px;
+            min-height: 44px;
+            padding: 10px;
+        }
+    }
+    
+    /* Mobile-specific tooltip positioning */
+    @media screen and (max-width: 768px) {
+        .metric-tooltip {
+            position: fixed !important;
+            bottom: auto !important;
+            top: 50% !important;
+            left: 50% !important;
+            transform: translate(-50%, -50%) !important;
+            width: calc(100vw - 2rem) !important;
+            max-width: calc(100vw - 2rem) !important;
+            max-height: 70vh;
+            overflow-y: auto;
+            margin: 0 !important;
+            z-index: 10001 !important;
+            padding: 1rem !important;
+            font-size: 0.9rem !important;
+        }
+        
+        .metric-tooltip-title {
+            font-size: 1rem !important;
+            margin-bottom: 0.75rem !important;
+        }
+        
+        .metric-tooltip-formula {
+            font-size: 0.85rem !important;
+            padding: 0.5rem !important;
+        }
+        
+        .metric-tooltip-insight {
+            font-size: 0.85rem !important;
+            margin-top: 0.75rem !important;
+        }
+    }
+    
+    /* Backdrop for mobile tooltips (created via JS) */
+    #metric-tooltip-backdrop {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.7);
+        z-index: 10000;
+        pointer-events: auto;
     }
     </style>
     """, unsafe_allow_html=True)
 
 
 def inject_metric_tooltip_js():
-    """Inject JavaScript for metric popup functionality."""
+    """Inject JavaScript for metric tooltip toggle functionality (hover + click/tap)."""
     st.markdown("""
     <script>
-    // Initialize metric tooltip system
+    // Initialize metric tooltip toggle system
     (function() {
-        // Create popup overlay if it doesn't exist
+        // Track currently open tooltip
+        let currentOpenTooltip = null;
+        
+        // Function to close tooltip
+        function closeTooltip(tooltip, iconElement) {
+            if (tooltip) {
+                tooltip.classList.remove('visible');
+            }
+            if (iconElement) {
+                iconElement.classList.remove('active');
+            }
+            currentOpenTooltip = null;
+            // Remove backdrop on mobile
+            const backdrop = document.getElementById('metric-tooltip-backdrop');
+            if (backdrop) {
+                backdrop.remove();
+            }
+            document.body.style.overflow = '';
+        }
+        
+        // Function to toggle tooltip visibility
+        window.toggleMetricTooltip = function(tooltipId, iconElement) {
+            const tooltip = document.getElementById(tooltipId);
+            if (!tooltip) return;
+            
+            // If this tooltip is already open, close it
+            if (tooltip.classList.contains('visible')) {
+                closeTooltip(tooltip, iconElement);
+            } else {
+                // Close any other open tooltip first
+                if (currentOpenTooltip && currentOpenTooltip !== tooltip) {
+                    const prevIcon = currentOpenTooltip.closest('.metric-card-container')?.querySelector('.metric-info-icon.active');
+                    closeTooltip(currentOpenTooltip, prevIcon);
+                }
+                
+                // Open this tooltip
+                tooltip.classList.add('visible');
+                if (iconElement) {
+                    iconElement.classList.add('active');
+                }
+                currentOpenTooltip = tooltip;
+                
+                // Add backdrop on mobile
+                const isMobile = window.innerWidth <= 768;
+                if (isMobile) {
+                    let backdrop = document.getElementById('metric-tooltip-backdrop');
+                    if (!backdrop) {
+                        backdrop = document.createElement('div');
+                        backdrop.id = 'metric-tooltip-backdrop';
+                        backdrop.addEventListener('click', function() {
+                            toggleMetricTooltip(tooltipId, iconElement);
+                        });
+                        document.body.appendChild(backdrop);
+                    }
+                    document.body.style.overflow = 'hidden';
+                }
+            }
+        };
+        
+        // Close tooltip when clicking outside (desktop)
+        document.addEventListener('click', function(e) {
+            // Only handle if not on mobile (mobile uses backdrop)
+            if (window.innerWidth > 768) {
+                const isTooltip = e.target.closest('.metric-tooltip');
+                const isIcon = e.target.closest('.metric-info-icon');
+                const isCard = e.target.closest('.metric-card-container');
+                
+                // If click is outside tooltip and icon, close any open tooltip
+                if (!isTooltip && !isIcon && currentOpenTooltip) {
+                    currentOpenTooltip.classList.remove('visible');
+                    const activeIcon = document.querySelector('.metric-info-icon.active');
+                    if (activeIcon) {
+                        activeIcon.classList.remove('active');
+                    }
+                    currentOpenTooltip = null;
+                }
+            }
+        });
+        
+        // Close tooltip on Escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && currentOpenTooltip) {
+                const activeIcon = currentOpenTooltip.closest('.metric-card-container')?.querySelector('.metric-info-icon.active');
+                closeTooltip(currentOpenTooltip, activeIcon);
+            }
+        });
+        
+        // Add keyboard support for info icons (Enter/Space to toggle)
+        document.addEventListener('keydown', function(e) {
+            if ((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('metric-info-icon')) {
+                e.preventDefault();
+                const tooltipId = e.target.getAttribute('onclick')?.match(/'([^']+)'/)?.[1];
+                if (tooltipId) {
+                    toggleMetricTooltip(tooltipId, e.target);
+                }
+            }
+        });
+        
+        // Create popup overlay if it doesn't exist (for detailed popup - optional)
         if (!document.getElementById('metric-popup-overlay')) {
             const overlay = document.createElement('div');
             overlay.id = 'metric-popup-overlay';
@@ -2517,7 +2691,7 @@ def inject_metric_tooltip_js():
             });
         }
         
-        // Function to show popup
+        // Function to show detailed popup (optional - for future use)
         window.showMetricPopup = function(title, description, formula, insight) {
             const overlay = document.getElementById('metric-popup-overlay');
             const body = document.getElementById('metric-popup-body');
@@ -2552,13 +2726,6 @@ def inject_metric_tooltip_js():
                 document.body.style.overflow = '';
             }
         };
-        
-        // Close on Escape key
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') {
-                closeMetricPopup();
-            }
-        });
     })();
     </script>
     """, unsafe_allow_html=True)
@@ -2598,9 +2765,11 @@ def kpi_card(label, value, prefix="", metric_key=None, explanation=None):
     formula = metric_info.get("formula", "Formula not available.")
     insight = metric_info.get("insight", "This metric helps track performance.")
     
-    # Generate unique ID for this metric card
+    # Generate unique ID for this metric card and tooltip
     import hashlib
     card_id = f"metric-{hashlib.md5(label.encode()).hexdigest()[:8]}"
+    tooltip_id = f"tooltip-{hashlib.md5(label.encode()).hexdigest()[:8]}"
+    icon_id = f"icon-{hashlib.md5(label.encode()).hexdigest()[:8]}"
     
     # Escape HTML in text content
     def escape_html(text):
@@ -2611,8 +2780,8 @@ def kpi_card(label, value, prefix="", metric_key=None, explanation=None):
     st.markdown(
         f"""
         <div class="metric-card-container" id="{card_id}">
-            <div class="metric-info-icon" onclick="showMetricPopup('{escape_html(label)}', '{escape_html(description)}', '{escape_html(formula)}', '{escape_html(insight)}')" title="Click for detailed information">i</div>
-            <div class="metric-tooltip">
+            <div class="metric-info-icon" id="{icon_id}" onclick="toggleMetricTooltip('{tooltip_id}', this)" title="Click for detailed information" role="button" aria-label="Show metric information" tabindex="0">i</div>
+            <div class="metric-tooltip" id="{tooltip_id}">
                 <div class="metric-tooltip-title">{escape_html(label)}</div>
                 <div class="metric-tooltip-formula">{escape_html(formula)}</div>
                 <div class="metric-tooltip-insight">{escape_html(insight)}</div>
