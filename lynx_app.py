@@ -63,6 +63,20 @@ def inject_responsive_css():
             max-width: 100% !important;
         }
         
+        /* Sidebar logo columns - exception to allow logo to display */
+        [data-testid="stSidebar"] .element-container > div[data-testid="column"] {
+            flex: 1 1 auto !important;
+            min-width: 0 !important;
+            max-width: 33.33% !important;
+            width: auto !important;
+        }
+        
+        /* Center column in sidebar (logo) should be wider */
+        [data-testid="stSidebar"] .element-container > div[data-testid="column"]:nth-child(2) {
+            flex: 2 2 auto !important;
+            max-width: 66.66% !important;
+        }
+        
         /* Responsive padding */
         .main .block-container {
             padding-left: 0.75rem;
@@ -136,6 +150,39 @@ def inject_responsive_css():
         /* Sidebar adjustments */
         .css-1d391kg {
             padding-top: 1rem;
+        }
+        
+        /* Sidebar logo - ensure it displays on mobile */
+        [data-testid="stSidebar"] img {
+            display: block !important;
+            max-width: 100% !important;
+            height: auto !important;
+            margin: 0.5rem auto !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+        }
+        
+        /* Sidebar logo container - ensure columns work for logo */
+        [data-testid="stSidebar"] [data-testid="column"] {
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+        }
+        
+        /* Ensure sidebar images are visible */
+        [data-testid="stSidebar"] .stImage,
+        [data-testid="stSidebar"] img {
+            display: block !important;
+            visibility: visible !important;
+            opacity: 1 !important;
+            max-width: 150px !important;
+            width: auto !important;
+        }
+        
+        /* Sidebar image wrapper */
+        [data-testid="stSidebar"] [data-testid="stImage"] {
+            display: block !important;
+            width: 100% !important;
         }
         
         /* Chart containers - ensure they fit */
@@ -3850,10 +3897,24 @@ inject_responsive_css()
 # Sidebar navigation header
 # Render Lynx logo
 if LYNX_LOGO_LIGHT.exists():
+    # Use columns for desktop, but ensure logo displays on mobile
     col_left, col_center, col_right = st.sidebar.columns([1, 2, 1])
     with col_center:
         # Responsive logo - use container width for better mobile support
-        st.image(str(LYNX_LOGO_LIGHT), use_container_width=True)
+        # Use st.image with explicit width for better mobile compatibility
+        try:
+            st.image(str(LYNX_LOGO_LIGHT), use_container_width=True)
+        except Exception:
+            # Fallback: use HTML img tag if st.image fails
+            logo_path_str = str(LYNX_LOGO_LIGHT).replace("\\", "/")
+            st.markdown(
+                f"""
+                <div style="display: flex; justify-content: center; align-items: center; width: 100%; padding: 0.5rem 0;">
+                    <img src="{logo_path_str}" style="max-width: 100%; height: auto; display: block; visibility: visible !important;" alt="Lynx Logo" />
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 else:
     st.sidebar.markdown("🏡")  # Fallback if logo file is missing
 
