@@ -321,6 +321,16 @@ METRIC_INFO = {
         "formula": "Total Nights ÷ Reservations",
         "insight": "Guest behavior indicator. Longer stays reduce turnover costs and increase revenue per booking."
     },
+    "Average Monthly Gross Income (€)": {
+        "description": "Calculates the average gross income per month for the selected period. Gross income is based on the RevenueForStay of each booking.",
+        "formula": "(Sum of RevenueForStay for all bookings in selected period) ÷ (Number of unique months within selected period)",
+        "insight": "Monthly gross income average. Helps understand revenue consistency and seasonal patterns. Higher values indicate better monthly performance."
+    },
+    "Average Monthly Net Income (€)": {
+        "description": "Calculates the average net income per month for the selected period. Net income accounts for per-stay expenses and fixed monthly costs.",
+        "formula": "(Sum of NetProfit for all bookings in selected period) ÷ (Number of unique months within selected period)",
+        "insight": "Monthly net income average. Shows true profitability per month after all costs. Essential for cash flow planning and financial forecasting."
+    },
     "Profit Margin (%)": {
         "description": "Percentage of revenue that becomes profit after all costs.",
         "formula": "(Net Profit ÷ Total Revenue) × 100",
@@ -1579,12 +1589,172 @@ def build_altair_chart(
     return chart
 
 
+def calculate_number_of_months(start_date, end_date):
+    """
+    Calculate the number of unique months between start_date and end_date (inclusive).
+    
+    Args:
+        start_date: Start date (datetime, date, or None)
+        end_date: End date (datetime, date, or None)
+    
+    Returns:
+        int: Number of unique months in the period
+    """
+    if start_date is None or end_date is None:
+        return 0
+    
+    # Convert to pandas datetime if needed
+    start_dt = pd.to_datetime(start_date)
+    end_dt = pd.to_datetime(end_date)
+    
+    # Calculate the difference in months
+    # We count unique months by creating a date range and counting unique year-month combinations
+    months = pd.period_range(start=start_dt, end=end_dt, freq='M')
+    
+    # If the range doesn't align with month boundaries, we need to count partial months
+    # Count unique year-month combinations
+    unique_months = set()
+    
+    # Start from the first day of start_date's month to the last day of end_date's month
+    current = pd.Timestamp(year=start_dt.year, month=start_dt.month, day=1)
+    end_month = pd.Timestamp(year=end_dt.year, month=end_dt.month, day=1)
+    
+    while current <= end_month:
+        unique_months.add((current.year, current.month))
+        # Move to next month
+        if current.month == 12:
+            current = pd.Timestamp(year=current.year + 1, month=1, day=1)
+        else:
+            current = pd.Timestamp(year=current.year, month=current.month + 1, day=1)
+    
+    return len(unique_months)
+
+
+def calculate_avg_monthly_gross_income(df, start_date, end_date):
+    """
+    Calculate average monthly gross income for the selected period.
+    
+    Formula: (Sum of RevenueForStay for all bookings) ÷ (Number of unique months)
+    
+    Uses the actual date range of bookings in the dataframe, not the theoretical period boundaries,
+    to ensure consistency when comparing year selection vs custom date ranges.
+    
+    Args:
+        df: Filtered bookings dataframe
+        start_date: Start date of the period (datetime, date, or None) - used as fallback
+        end_date: End date of the period (datetime, date, or None) - used as fallback
+    
+    Returns:
+        float: Average monthly gross income
+    """
+    if df.empty:
+        return 0.0
+    
+    # Use actual date range from the bookings data, not theoretical boundaries
+    if "Check-in date" in df.columns and not df["Check-in date"].dropna().empty:
+        actual_start = pd.to_datetime(df["Check-in date"].min())
+        actual_end = pd.to_datetime(df["Check-in date"].max())
+    elif start_date is not None and end_date is not None:
+        # Fallback to provided dates if no check-in dates available
+        actual_start = pd.to_datetime(start_date)
+        actual_end = pd.to_datetime(end_date)
+    else:
+        return 0.0
+    
+    # Calculate number of months based on actual data range
+    num_months = calculate_number_of_months(actual_start, actual_end)
+    if num_months == 0:
+        return 0.0
+    
+    # Sum of RevenueForStay (Revenue for stay (€))
+    if "Revenue for stay (€)" in df.columns:
+        total_gross = float(df["Revenue for stay (€)"].fillna(0).sum())
+    else:
+        return 0.0
+    
+    # Calculate average
+    avg_monthly_gross = total_gross / num_months if num_months > 0 else 0.0
+    
+    return avg_monthly_gross
+
+
+def calculate_avg_monthly_net_income(df, monthly_costs_filtered, view_mode, start_date, end_date):
+    """
+    Calculate average monthly net income for the selected period.
+    
+    Formula: (Sum of NetProfit for all bookings) ÷ (Number of unique months)
+    
+    NetProfit = Revenue - Per-Stay Expenses - Fixed Costs (for Overall view)
+    or NetProfit = Revenue - Per-Stay Expenses (for platform-specific views)
+    
+    Uses the actual date range of bookings in the dataframe, not the theoretical period boundaries,
+    to ensure consistency when comparing year selection vs custom date ranges.
+    
+    Args:
+        df: Filtered bookings dataframe
+        monthly_costs_filtered: Filtered monthly costs dataframe
+        view_mode: 'Overall', 'Airbnb', or 'Booking.com'
+        start_date: Start date of the period (datetime, date, or None) - used as fallback
+        end_date: End date of the period (datetime, date, or None) - used as fallback
+    
+    Returns:
+        float: Average monthly net income
+    """
+    if df.empty:
+        return 0.0
+    
+    # Use actual date range from the bookings data, not theoretical boundaries
+    if "Check-in date" in df.columns and not df["Check-in date"].dropna().empty:
+        actual_start = pd.to_datetime(df["Check-in date"].min())
+        actual_end = pd.to_datetime(df["Check-in date"].max())
+    elif start_date is not None and end_date is not None:
+        # Fallback to provided dates if no check-in dates available
+        actual_start = pd.to_datetime(start_date)
+        actual_end = pd.to_datetime(end_date)
+    else:
+        return 0.0
+    
+    # Calculate number of months based on actual data range
+    num_months = calculate_number_of_months(actual_start, actual_end)
+    if num_months == 0:
+        return 0.0
+    
+    # Calculate total revenue
+    if "Revenue for stay (€)" in df.columns:
+        total_revenue = float(df["Revenue for stay (€)"].fillna(0).sum())
+    else:
+        return 0.0
+    
+    # Calculate total per-stay expenses
+    if "Per-stay expenses (€)" in df.columns:
+        total_per_stay = float(df["Per-stay expenses (€)"].fillna(0).sum())
+    else:
+        total_per_stay = 0.0
+    
+    # Calculate net profit
+    net_before_fixed = total_revenue - total_per_stay
+    
+    # For Overall view, subtract fixed costs
+    if view_mode == "Overall" and "Total Fixed Costs (€)" in monthly_costs_filtered.columns:
+        total_fixed = float(monthly_costs_filtered["Total Fixed Costs (€)"].fillna(0).sum())
+        net_profit = net_before_fixed - total_fixed
+    else:
+        net_profit = net_before_fixed
+    
+    # Calculate average
+    avg_monthly_net = net_profit / num_months if num_months > 0 else 0.0
+    
+    return avg_monthly_net
+
+
 def calculate_all_metrics(
     bookings_filtered: pd.DataFrame,
     monthly_costs_filtered: pd.DataFrame,
     view_mode: str,
     nights_available: int,
     selected_year_int: int | None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
 ) -> dict[str, dict]:
     """
     Calculate all metrics and return them in metric_info format.
@@ -1928,6 +2098,19 @@ def calculate_all_metrics(
     add_metric("Net Profit (€)", net_label, net_profit if net_profit is not None else net_before_fixed, "€ ", net_explanation)
     add_metric("Average price per night (€)", "Average price per night (€) (ADR)", adr, "€ ", "Average revenue per booked night (Total Revenue ÷ Booked Nights - only occupied nights). Same as ADR.")
     add_metric("Average stay (nights)", "Average stay (nights)", avg_stay_nights, "", "Average length of stay per reservation (total nights ÷ reservations).")
+    
+    # ========== AVERAGE MONTHLY INCOME METRICS ==========
+    # Calculate average monthly gross and net income
+    # Functions now use actual date range from bookings data, so they work for "All" selection too
+    # Always add these metrics to metric_info so they're available in Custom Metrics
+    avg_monthly_gross = calculate_avg_monthly_gross_income(bookings_filtered, start_date, end_date)
+    avg_monthly_net = calculate_avg_monthly_net_income(bookings_filtered, monthly_costs_filtered, view_mode, start_date, end_date)
+    
+    add_metric("Average Monthly Gross Income (€)", "Average Monthly Gross Income (€)", avg_monthly_gross, "€ ", 
+               "Calculates the average gross income per month for the selected period. Gross income is based on the RevenueForStay of each booking.")
+    
+    add_metric("Average Monthly Net Income (€)", "Average Monthly Net Income (€)", avg_monthly_net, "€ ", 
+               "Calculates the average net income per month for the selected period. Net income accounts for per-stay expenses and fixed monthly costs.")
 
     # ========== PROFITABILITY METRICS ==========
     if net_profit is not None and total_revenue > 0:
@@ -2146,6 +2329,8 @@ METRIC_SECTIONS = {
         "Net Profit (€)",
         "Average price per night (€)",
         "Average stay (nights)",
+        "Average Monthly Gross Income (€)",
+        "Average Monthly Net Income (€)",
     ],
     "Profitability": [
         "Profit Margin (%)",
@@ -3472,12 +3657,30 @@ def render_report(
     )
     
     # Calculate metrics
+    # Determine start_date and end_date for metrics calculation
+    report_start_date = None
+    report_end_date = None
+    period_type = filter_params.get("period_type", "year")
+    if period_type == "date_range":
+        report_start_date = filter_params.get("start_date")
+        report_end_date = filter_params.get("end_date")
+        if report_start_date:
+            report_start_date = pd.Timestamp(report_start_date)
+        if report_end_date:
+            report_end_date = pd.Timestamp(report_end_date)
+    elif period_type == "year" and selected_year is not None:
+        # For year selection, use year boundaries
+        report_start_date = pd.Timestamp(year=selected_year, month=1, day=1)
+        report_end_date = pd.Timestamp(year=selected_year, month=12, day=31)
+    
     metric_info = calculate_all_metrics(
         bookings_filtered,
         monthly_costs_filtered,
         platform,
         nights_available,
         selected_year,
+        start_date=report_start_date,
+        end_date=report_end_date,
     )
     
     # Render metrics
@@ -3889,12 +4092,25 @@ if page == "Dashboard":
         initialize_custom_graphs()
 
         # Calculate all metrics using the comprehensive function
+        # Determine start_date and end_date for metrics calculation
+        metrics_start_date = None
+        metrics_end_date = None
+        if use_custom_range and start_date is not None and end_date is not None:
+            metrics_start_date = pd.Timestamp(start_date)
+            metrics_end_date = pd.Timestamp(end_date)
+        elif selected_year_int is not None:
+            # For year selection, use year boundaries
+            metrics_start_date = pd.Timestamp(year=selected_year_int, month=1, day=1)
+            metrics_end_date = pd.Timestamp(year=selected_year_int, month=12, day=31)
+        
         metric_info = calculate_all_metrics(
             bookings_filtered,
             monthly_costs_filtered,
             view_mode,
             nights_available,
             selected_year_int,
+            start_date=metrics_start_date,
+            end_date=metrics_end_date,
         )
 
         # ----- Show core metrics -----
@@ -3907,6 +4123,8 @@ if page == "Dashboard":
             "Total revenue (€)",
             "Net Profit (€)",
             "Average price per night (€)",
+            "Average Monthly Gross Income (€)",
+            "Average Monthly Net Income (€)",
         ]
 
         core_columns = st.columns(3)
@@ -3922,8 +4140,8 @@ if page == "Dashboard":
         st.markdown("---")
         st.markdown("#### ⭐ Custom Metrics")
         
-        # Get all available metric keys (excluding core keys)
-        all_metric_keys = [k for k in metric_info.keys() if k not in core_keys]
+        # Get all available metric keys (including core keys so they can be added to Custom Metrics too)
+        all_metric_keys = [k for k in metric_info.keys()]
         
         # Filter out invalid metrics from custom_metrics (metrics that no longer exist)
         valid_custom_metrics = [k for k in st.session_state["custom_metrics"] if k in metric_info]
