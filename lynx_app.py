@@ -62,6 +62,20 @@ def inject_responsive_css():
             min-width: 100% !important;
             max-width: 100% !important;
         }
+        /* Newer Streamlit layout wrapper */
+        [data-testid="stHorizontalBlock"] [data-testid="column"] {
+            width: 100% !important;
+            flex: 1 1 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
+        }
+        /* Ensure nested horizontal blocks also stack */
+        [data-testid="column"] [data-testid="stHorizontalBlock"] [data-testid="column"] {
+            width: 100% !important;
+            flex: 1 1 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
+        }
         
         /* Sidebar logo columns - exception to allow logo to display */
         [data-testid="stSidebar"] .element-container > div[data-testid="column"] {
