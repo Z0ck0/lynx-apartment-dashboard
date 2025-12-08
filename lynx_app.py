@@ -838,6 +838,23 @@ def get_current_consumables_totals(consumables_df: pd.DataFrame) -> tuple[float,
     return total_mkd, total_eur
 
 
+def render_laundry_pricing_table() -> None:
+    """Render a static laundry pricing table inside the Expenses page."""
+    laundry_rows = [
+        {"Артикл": "Јастучница за јастук (50×60 cm)", "Големина / Тип": "Единична", "Перење / Пеглање (ден.)": "20–25"},
+        {"Артикл": "Навлака за јорган (брачен, 160×200)", "Големина / Тип": "Брачен сет", "Перење / Пеглање (ден.)": "60"},
+        {"Артикл": "Навлака за јорган", "Големина / Тип": "Единична", "Перење / Пеглање (ден.)": "50"},
+        {"Артикл": "Чаршав со ластик (брачен кревет)", "Големина / Тип": "Брачен сет", "Перење / Пеглање (ден.)": "50"},
+        {"Артикл": "Чаршав со ластик (единичен кревет)", "Големина / Тип": "Единичен сет", "Перење / Пеглање (ден.)": "50"},
+    ]
+
+    df = pd.DataFrame(laundry_rows)
+
+    st.markdown("#### Laundry Pricing Table")
+    st.caption("Static price list (not yet connected to spreadsheet)")
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+
 def clean_bookings(df: pd.DataFrame) -> pd.DataFrame:
     """Drop fully empty rows and rows without check-in date."""
     df = df.dropna(how="all")
@@ -6360,9 +6377,9 @@ elif page == "Expenses":
     if "expenses_tab" not in st.session_state:
         st.session_state["expenses_tab"] = "Fixed Costs"
     
-    # Create tabs for Fixed Costs and Consumables Costs
-    tab_names = ["💸 Fixed Costs", "🧴 Consumables Costs"]
-    tab1, tab2 = st.tabs(tab_names)
+    # Create tabs for Fixed Costs, Consumables, and Laundry Pricing
+    tab_names = ["💸 Fixed Costs", "🧴 Consumables Costs", "🧺 Laundry Pricing"]
+    tab1, tab2, tab3 = st.tabs(tab_names)
     
     # Track which tab is being accessed
     # We'll update session_state when each tab context is entered
@@ -6506,3 +6523,8 @@ elif page == "Expenses":
             st.session_state["expenses_tab"] = "Consumables Costs"
             st.success("Consumables Costs updated and saved ✅")
             st.rerun()  # Refresh to show updated totals
+
+    # -------- TAB 3: Laundry Pricing (Static) --------
+    with tab3:
+        st.session_state["expenses_tab"] = "Laundry Pricing"
+        render_laundry_pricing_table()
