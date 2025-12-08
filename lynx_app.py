@@ -94,6 +94,7 @@ def inject_responsive_css():
             width: 100% !important;
             margin-bottom: 1rem;
             padding: 0.875rem !important;
+            min-height: 140px !important;
         }
         
         /* Metric card text - responsive */
@@ -177,6 +178,66 @@ def inject_responsive_css():
             opacity: 1 !important;
             max-width: 150px !important;
             width: auto !important;
+        }
+        
+        /* Period and month selector - stack on mobile */
+        div[data-testid="column"]:has(select[key*="period"]) {
+            width: 100% !important;
+            flex: 1 1 100% !important;
+            margin-bottom: 0.5rem;
+        }
+        
+        div[data-testid="column"]:has(select[key*="month"]) {
+            width: 100% !important;
+            flex: 1 1 100% !important;
+        }
+        
+        /* Month navigation buttons - ensure they're touch-friendly */
+        button[key*="prev_month"],
+        button[key*="next_month"] {
+            min-width: 44px !important;
+            min-height: 44px !important;
+            font-size: 1.2rem !important;
+        }
+        
+        /* Month selector container - ensure proper stacking */
+        div:has(select[key*="month"]) {
+            display: flex !important;
+            flex-direction: column !important;
+            gap: 0.5rem;
+        }
+        
+        /* Month navigation row - ensure buttons and selectbox are visible */
+        div:has(button[key*="prev_month"]) {
+            display: flex !important;
+            flex-direction: row !important;
+            align-items: center !important;
+            gap: 0.5rem;
+            width: 100% !important;
+        }
+        
+        /* KPI cards - maintain consistent height on mobile */
+        .metric-card-container {
+            min-height: 140px !important;
+        }
+        
+        .metric-card-label {
+            min-height: 28px !important;
+        }
+        
+        /* Month selector alignment on mobile */
+        div[data-testid="column"]:has(button[key*="prev_month"]),
+        div[data-testid="column"]:has(button[key*="next_month"]) {
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+        }
+        
+        /* Ensure month dropdown and buttons align vertically */
+        div:has(select[key*="month"]) ~ div[data-testid="column"],
+        div[data-testid="column"]:has(select[key*="month"]) {
+            display: flex !important;
+            align-items: center !important;
         }
         
         /* Sidebar image wrapper */
@@ -329,14 +390,14 @@ FX_RATE = 61.51  # 1 euro = 61.51 denars
 # Central configuration for all metric descriptions, formulas, and insights
 METRIC_INFO = {
     "Reservations": {
-        "description": "Number of completed bookings in the selected period.",
-        "formula": "Count of all bookings",
-        "insight": "Shows booking volume. Higher numbers indicate more activity and potential revenue."
+        "description": "Counts bookings that contributed at least one booked night to the selected period.",
+        "formula": "Count of bookings with overlap_nights > 0",
+        "insight": "Shows booking volume. Includes bookings that started before the period but overlap with it. Higher numbers indicate more activity and potential revenue."
     },
     "Total nights": {
-        "description": "Sum of all booked nights in the selected period.",
-        "formula": "Sum of Nights column for all bookings",
-        "insight": "Total occupancy nights. Compare with available nights to understand utilization."
+        "description": "Counts only the nights that fall inside the selected period, even if the booking started earlier.",
+        "formula": "Sum of overlapping nights: max(check_in, period_start) to min(check_out, period_end)",
+        "insight": "Total occupancy nights within the period. Accurately reflects nights that contribute to the selected timeframe, regardless of when the booking started."
     },
     "Occupancy (%)": {
         "description": "Percentage of available nights that were actually booked.",
@@ -1025,11 +1086,274 @@ def save_data(bookings: pd.DataFrame,
         toiletries.to_excel(writer, sheet_name="Toiletries", index=False)
 
 
+def get_year_range(year: int) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """
+    Get the date range for an entire year.
+    
+    Args:
+        year: Year (e.g., 2025)
+    
+    Returns:
+        tuple: (start_date, end_date) for the year
+    """
+    start = pd.Timestamp(year=year, month=1, day=1)
+    end = pd.Timestamp(year=year, month=12, day=31)
+    return start, end
+
+
+def get_month_range(year: int, month: int) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """
+    Get the date range for a specific month in a year.
+    
+    Args:
+        year: Year (e.g., 2025)
+        month: Month (1-12)
+    
+    Returns:
+        tuple: (start_date, end_date) for the month
+    """
+    start = pd.Timestamp(year=year, month=month, day=1)
+    # Get last day of month
+    last_day = calendar.monthrange(year, month)[1]
+    end = pd.Timestamp(year=year, month=month, day=last_day)
+    return start, end
+
+
+def go_to_previous_month(year: int, month: int) -> tuple[int, int]:
+    """
+    Navigate to the previous month.
+    Handles year rollover (January -> December of previous year).
+    
+    Args:
+        year: Current year
+        month: Current month (1-12)
+    
+    Returns:
+        tuple: (new_year, new_month)
+    """
+    if month == 1:
+        return year - 1, 12
+    else:
+        return year, month - 1
+
+
+def go_to_next_month(year: int, month: int) -> tuple[int, int]:
+    """
+    Navigate to the next month.
+    Handles year rollover (December -> January of next year).
+    
+    Args:
+        year: Current year
+        month: Current month (1-12)
+    
+    Returns:
+        tuple: (new_year, new_month)
+    """
+    if month == 12:
+        return year + 1, 1
+    else:
+        return year, month + 1
+
+
+def get_night_dates(check_in, check_out):
+    """
+    Generate a list of all night dates for a booking.
+    Nights are based on check-in dates (check-out date is exclusive).
+    
+    Args:
+        check_in: Check-in date (datetime, Timestamp, or None)
+        check_out: Check-out date (datetime, Timestamp, or None)
+    
+    Returns:
+        list: List of date objects representing each night of the stay
+    """
+    if pd.isna(check_in) or pd.isna(check_out):
+        return []
+    
+    check_in_dt = pd.to_datetime(check_in).normalize()
+    check_out_dt = pd.to_datetime(check_out).normalize()
+    
+    if check_out_dt <= check_in_dt:
+        return []
+    
+    # Generate all night dates from check-in to check-out (exclusive)
+    night_dates = []
+    current_date = check_in_dt
+    while current_date < check_out_dt:
+        night_dates.append(current_date.date())
+        current_date += pd.Timedelta(days=1)
+    
+    return night_dates
+
+
+def count_nights_in_period(check_in, check_out, period_start, period_end):
+    """
+    Count the number of nights that fall within the selected period.
+    Uses explicit per-night iteration to handle edge cases correctly.
+    
+    Args:
+        check_in: Check-in date (datetime, Timestamp, or None)
+        check_out: Check-out date (datetime, Timestamp, or None)
+        period_start: Start date of the selected period (datetime, Timestamp, or None)
+        period_end: End date of the selected period (datetime, Timestamp, or None)
+    
+    Returns:
+        int: Number of nights within the period (0 if no overlap)
+    """
+    if pd.isna(check_in) or pd.isna(check_out) or period_start is None or period_end is None:
+        return 0
+    
+    # Get all night dates for this booking
+    night_dates = get_night_dates(check_in, check_out)
+    if not night_dates:
+        return 0
+    
+    # Convert period boundaries to date objects for comparison
+    period_start_dt = pd.to_datetime(period_start).date()
+    period_end_dt = pd.to_datetime(period_end).date()
+    
+    # Count nights that fall within the period
+    nights_in_period = 0
+    for night_date in night_dates:
+        if period_start_dt <= night_date <= period_end_dt:
+            nights_in_period += 1
+    
+    return nights_in_period
+
+
+def calculate_overlap_nights(check_in, check_out, period_start, period_end):
+    """
+    Calculate the number of nights that overlap between a booking and a period.
+    This is a wrapper function that uses the per-night counting logic.
+    
+    Args:
+        check_in: Check-in date (datetime, Timestamp, or None)
+        check_out: Check-out date (datetime, Timestamp, or None)
+        period_start: Start date of the selected period (datetime, Timestamp, or None)
+        period_end: End date of the selected period (datetime, Timestamp, or None)
+    
+    Returns:
+        int: Number of overlapping nights (0 if no overlap)
+    """
+    return count_nights_in_period(check_in, check_out, period_start, period_end)
+
+
+def calculate_revenue_per_night(booking_row):
+    """
+    Calculate revenue per night for a booking.
+    
+    Args:
+        booking_row: A pandas Series representing a booking row
+    
+    Returns:
+        float: Revenue per night (0 if invalid)
+    """
+    if pd.isna(booking_row.get("Check-in date")) or pd.isna(booking_row.get("Check-out date")):
+        return 0.0
+    
+    check_in = pd.to_datetime(booking_row.get("Check-in date"))
+    check_out = pd.to_datetime(booking_row.get("Check-out date"))
+    
+    if check_out <= check_in:
+        return 0.0
+    
+    total_nights = (check_out - check_in).days
+    if total_nights == 0:
+        return 0.0
+    
+    revenue_for_stay = float(booking_row.get("Revenue for stay (€)", 0) or 0)
+    revenue_per_night = revenue_for_stay / total_nights
+    
+    return revenue_per_night
+
+
+def calculate_net_profit_per_night(booking_row, fixed_cost_share: float = 0.0):
+    """
+    Calculate net profit per night for a booking.
+    
+    Args:
+        booking_row: A pandas Series representing a booking row
+        fixed_cost_share: Fixed cost allocation for this booking (default: 0.0)
+    
+    Returns:
+        float: Net profit per night (0 if invalid)
+    """
+    if pd.isna(booking_row.get("Check-in date")) or pd.isna(booking_row.get("Check-out date")):
+        return 0.0
+    
+    check_in = pd.to_datetime(booking_row.get("Check-in date"))
+    check_out = pd.to_datetime(booking_row.get("Check-out date"))
+    
+    if check_out <= check_in:
+        return 0.0
+    
+    total_nights = (check_out - check_in).days
+    if total_nights == 0:
+        return 0.0
+    
+    # Calculate total net profit for the booking
+    revenue_for_stay = float(booking_row.get("Revenue for stay (€)", 0) or 0)
+    per_stay_expenses = float(booking_row.get("Per-stay expenses (€)", 0) or 0)
+    
+    # Net profit = Revenue - Per-stay expenses - Fixed cost share
+    total_net_profit = revenue_for_stay - per_stay_expenses - fixed_cost_share
+    net_profit_per_night = total_net_profit / total_nights
+    
+    return net_profit_per_night
+
+
+def calculate_distributed_revenue(booking_row, nights_in_period: int):
+    """
+    Calculate the revenue contribution for a booking based on nights in period.
+    
+    Args:
+        booking_row: A pandas Series representing a booking row
+        nights_in_period: Number of nights that fall within the selected period
+    
+    Returns:
+        float: Distributed revenue for the period
+    """
+    if nights_in_period <= 0:
+        return 0.0
+    
+    revenue_per_night = calculate_revenue_per_night(booking_row)
+    distributed_revenue = revenue_per_night * nights_in_period
+    
+    return distributed_revenue
+
+
+def calculate_distributed_net_profit(booking_row, nights_in_period: int, fixed_cost_share: float = 0.0):
+    """
+    Calculate the net profit contribution for a booking based on nights in period.
+    
+    Args:
+        booking_row: A pandas Series representing a booking row
+        nights_in_period: Number of nights that fall within the selected period
+        fixed_cost_share: Fixed cost allocation for this booking (default: 0.0)
+    
+    Returns:
+        float: Distributed net profit for the period
+    """
+    if nights_in_period <= 0:
+        return 0.0
+    
+    net_profit_per_night = calculate_net_profit_per_night(booking_row, fixed_cost_share)
+    distributed_net_profit = net_profit_per_night * nights_in_period
+    
+    return distributed_net_profit
+
+
 def compute_metrics(bookings: pd.DataFrame,
                     monthly_costs: pd.DataFrame,
-                    view_mode: str):
+                    view_mode: str,
+                    period_start: Optional[datetime] = None,
+                    period_end: Optional[datetime] = None,
+                    use_overlap_logic: bool = False):
     """
     view_mode: 'Overall', 'Airbnb', 'Booking.com'
+    period_start: Start date of the selected period (for overlap calculation)
+    period_end: End date of the selected period (for overlap calculation)
+    use_overlap_logic: If True, calculate nights and reservations using overlap logic
     """
     df = clean_bookings(bookings.copy())
 
@@ -1043,21 +1367,87 @@ def compute_metrics(bookings: pd.DataFrame,
     elif view_mode == "Booking.com":
         df = df[df["Platform"] == "Booking.com"]
 
-    reservations = len(df)
-    total_nights = df["Nights"].fillna(0).sum() if "Nights" in df.columns else 0
-    total_revenue = df["Revenue for stay (€)"].fillna(0).sum() if "Revenue for stay (€)" in df.columns else 0
-    total_per_stay = df["Per-stay expenses (€)"].fillna(0).sum() if "Per-stay expenses (€)" in df.columns else 0
-
-    if "Net Income Before Fixed Costs (€)" in df.columns:
-        net_before_fixed = df["Net Income Before Fixed Costs (€)"].fillna(
-            df["Revenue for stay (€)"].fillna(0) - df["Per-stay expenses (€)"].fillna(0)
-        ).sum()
-    else:
+    # Calculate reservations and nights using overlap logic if requested
+    use_distributed_calculation = use_overlap_logic and period_start is not None and period_end is not None
+    
+    if use_distributed_calculation and "Check-in date" in df.columns and "Check-out date" in df.columns:
+        # Calculate overlap nights for each booking
+        overlap_nights = df.apply(
+            lambda row: calculate_overlap_nights(
+                row.get("Check-in date"),
+                row.get("Check-out date"),
+                period_start,
+                period_end
+            ),
+            axis=1
+        )
+        total_nights = int(overlap_nights.sum())
+        # Count reservations that have at least one overlapping night
+        reservations = int((overlap_nights > 0).sum())
+        
+        # Calculate distributed revenue and profit per night
+        distributed_revenue_series = df.apply(
+            lambda row: calculate_distributed_revenue(row, overlap_nights[row.name]),
+            axis=1
+        )
+        # Ensure we're summing numeric values only (convert to float to avoid datetime issues)
+        # Convert to Series first, then to numeric, then fillna and sum
+        if len(distributed_revenue_series) > 0:
+            distributed_revenue = pd.Series(pd.to_numeric(distributed_revenue_series.values, errors='coerce')).fillna(0).sum()
+        else:
+            distributed_revenue = 0.0
+        
+        # Calculate distributed per-stay expenses (proportional to nights)
+        distributed_per_stay_series = df.apply(
+            lambda row: (
+                (float(row.get("Per-stay expenses (€)", 0) or 0) / 
+                 max((pd.to_datetime(row.get("Check-out date")) - pd.to_datetime(row.get("Check-in date"))).days, 1))
+                * overlap_nights[row.name]
+            ) if not (pd.isna(row.get("Check-in date")) or pd.isna(row.get("Check-out date"))) else 0.0,
+            axis=1
+        )
+        # Ensure we're summing numeric values only (convert to float to avoid datetime issues)
+        # Convert to Series first, then to numeric, then fillna and sum
+        if len(distributed_per_stay_series) > 0:
+            distributed_per_stay = pd.Series(pd.to_numeric(distributed_per_stay_series.values, errors='coerce')).fillna(0).sum()
+        else:
+            distributed_per_stay = 0.0
+        
+        total_revenue = float(distributed_revenue)
+        total_per_stay = float(distributed_per_stay)
         net_before_fixed = total_revenue - total_per_stay
+    else:
+        # Original logic: count all filtered bookings (for "All" selection or when dates not available)
+        reservations = len(df)
+        total_nights = df["Nights"].fillna(0).sum() if "Nights" in df.columns else 0
+        total_revenue = df["Revenue for stay (€)"].fillna(0).sum() if "Revenue for stay (€)" in df.columns else 0
+        total_per_stay = df["Per-stay expenses (€)"].fillna(0).sum() if "Per-stay expenses (€)" in df.columns else 0
+
+        if "Net Income Before Fixed Costs (€)" in df.columns:
+            net_before_fixed = df["Net Income Before Fixed Costs (€)"].fillna(
+                df["Revenue for stay (€)"].fillna(0) - df["Per-stay expenses (€)"].fillna(0)
+            ).sum()
+        else:
+            net_before_fixed = total_revenue - total_per_stay
 
     # Only for Overall: use fixed costs
     if view_mode == "Overall" and "Total Fixed Costs (€)" in monthly_costs.columns:
         total_fixed = monthly_costs["Total Fixed Costs (€)"].fillna(0).sum()
+        
+        # For distributed calculation, allocate fixed costs proportionally based on nights
+        if use_distributed_calculation and total_nights > 0:
+            # Calculate total nights across all bookings (for fixed cost allocation)
+            total_booking_nights = df.apply(
+                lambda row: (
+                    (pd.to_datetime(row.get("Check-out date")) - pd.to_datetime(row.get("Check-in date"))).days
+                    if not (pd.isna(row.get("Check-in date")) or pd.isna(row.get("Check-out date"))) else 0
+                ),
+                axis=1
+            ).sum()
+            
+            if total_booking_nights > 0:
+                # Allocate fixed costs proportionally based on nights in period
+                total_fixed = total_fixed * (total_nights / total_booking_nights)
     else:
         total_fixed = None
 
@@ -1802,10 +2192,16 @@ def calculate_all_metrics(
     selected_year_int: int | None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    bookings_all: Optional[pd.DataFrame] = None,
 ) -> dict[str, dict]:
     """
     Calculate all metrics and return them in metric_info format.
     Returns: dict[key] = {label, value, prefix, explanation}
+    
+    Args:
+        bookings_filtered: Bookings filtered by check-in date (for revenue/expenses)
+        bookings_all: All bookings (for overlap-based nights/reservations calculation)
+        Other args: Same as before
     """
     metric_info: dict[str, dict] = {}
 
@@ -1817,14 +2213,126 @@ def calculate_all_metrics(
             "explanation": explanation,
         }
 
-    # Get base metrics
-    metrics = compute_metrics(bookings_filtered, monthly_costs_filtered, view_mode)
+    # Use all bookings for overlap calculation if provided, otherwise use filtered
+    bookings_for_overlap = bookings_all if bookings_all is not None else bookings_filtered
+    
+    # Determine period boundaries for distributed calculation
+    period_start_dt = None
+    period_end_dt = None
+    use_distributed = False
+    
+    if start_date is not None and end_date is not None:
+        period_start_dt = pd.to_datetime(start_date)
+        period_end_dt = pd.to_datetime(end_date)
+        use_distributed = True
+    elif selected_year_int is not None:
+        period_start_dt = pd.Timestamp(year=selected_year_int, month=1, day=1)
+        period_end_dt = pd.Timestamp(year=selected_year_int, month=12, day=31)
+        use_distributed = True
+    
+    # Get base metrics - use distributed calculation if we have period boundaries
+    metrics = compute_metrics(
+        bookings_filtered, 
+        monthly_costs_filtered, 
+        view_mode,
+        period_start=period_start_dt,
+        period_end=period_end_dt,
+        use_overlap_logic=use_distributed
+    )
+    
+    # If using distributed calculation, we need to recalculate from all bookings
+    if use_distributed:
+        # Calculate overlap nights and distributed revenue/profit from ALL bookings
+        df_all = clean_bookings(bookings_for_overlap.copy())
+        
+        # Normalize platform labels
+        if "Platform" in df_all.columns:
+            df_all["Platform"] = df_all["Platform"].replace({"Booking": "Booking.com"})
+        
+        # Filter by platform if needed
+        if view_mode == "Airbnb":
+            df_all = df_all[df_all["Platform"] == "Airbnb"]
+        elif view_mode == "Booking.com":
+            df_all = df_all[df_all["Platform"] == "Booking.com"]
+        
+        # Calculate overlap nights for each booking
+        if "Check-in date" in df_all.columns and "Check-out date" in df_all.columns:
+            overlap_nights = df_all.apply(
+                lambda row: calculate_overlap_nights(
+                    row.get("Check-in date"),
+                    row.get("Check-out date"),
+                    period_start_dt,
+                    period_end_dt
+                ),
+                axis=1
+            )
+            total_nights = int(overlap_nights.sum())
+            # Count reservations that have at least one overlapping night
+            reservations = int((overlap_nights > 0).sum())
+            
+            # Calculate distributed revenue and expenses
+            distributed_revenue_series = df_all.apply(
+                lambda row: calculate_distributed_revenue(row, overlap_nights[row.name]),
+                axis=1
+            )
+            # Ensure we're summing numeric values only (convert to float to avoid datetime issues)
+            # Convert to Series first, then to numeric, then fillna and sum
+            if len(distributed_revenue_series) > 0:
+                distributed_revenue = pd.Series(pd.to_numeric(distributed_revenue_series.values, errors='coerce')).fillna(0).sum()
+            else:
+                distributed_revenue = 0.0
+            
+            # Calculate distributed per-stay expenses (proportional to nights)
+            distributed_per_stay_series = df_all.apply(
+                lambda row: (
+                    (float(row.get("Per-stay expenses (€)", 0) or 0) / 
+                     max((pd.to_datetime(row.get("Check-out date")) - pd.to_datetime(row.get("Check-in date"))).days, 1))
+                    * overlap_nights[row.name]
+                ) if not (pd.isna(row.get("Check-in date")) or pd.isna(row.get("Check-out date"))) else 0.0,
+                axis=1
+            )
+            # Ensure we're summing numeric values only (convert to float to avoid datetime issues)
+            # Convert to Series first, then to numeric, then fillna and sum
+            if len(distributed_per_stay_series) > 0:
+                distributed_per_stay = pd.Series(pd.to_numeric(distributed_per_stay_series.values, errors='coerce')).fillna(0).sum()
+            else:
+                distributed_per_stay = 0.0
+            
+            # Update metrics with distributed values
+            metrics["Total nights"] = total_nights
+            metrics["Reservations"] = reservations
+            metrics["Total revenue (€)"] = float(distributed_revenue)
+            metrics["Total Per-Stay Expenses (€)"] = float(distributed_per_stay)
+            metrics["Net Income Before Fixed Costs (€)"] = float(distributed_revenue - distributed_per_stay)
+            
+            # Update Net Profit if fixed costs are available
+            if "Net Profit (€)" in metrics:
+                # Calculate total booking nights for fixed cost allocation
+                total_booking_nights = df_all.apply(
+                    lambda row: (
+                        (pd.to_datetime(row.get("Check-out date")) - pd.to_datetime(row.get("Check-in date"))).days
+                        if not (pd.isna(row.get("Check-in date")) or pd.isna(row.get("Check-out date"))) else 0
+                    ),
+                    axis=1
+                ).sum()
+                
+                if total_booking_nights > 0 and total_nights > 0:
+                    # Allocate fixed costs proportionally
+                    original_fixed = metrics.get("Total Fixed Costs (€)", 0.0)
+                    allocated_fixed = original_fixed * (total_nights / total_booking_nights)
+                    metrics["Total Fixed Costs (€)"] = float(allocated_fixed)
+                    metrics["Net Profit (€)"] = float(distributed_revenue - distributed_per_stay - allocated_fixed)
+        else:
+            # Fallback to original logic if dates are missing
+            total_nights = int(metrics.get("Total nights", 0))
+            reservations = int(metrics.get("Reservations", 0))
+    # Extract values from metrics (already calculated with distributed logic if use_distributed=True)
+    total_nights = int(metrics.get("Total nights", 0))
+    reservations = int(metrics.get("Reservations", 0))
 
     total_revenue = float(metrics.get("Total revenue (€)", 0.0))
-    total_nights = int(metrics.get("Total nights", 0))  # Nights should be whole numbers
     total_per_stay_expenses = float(metrics.get("Total Per-Stay Expenses (€)", 0.0))
     total_fixed_costs = float(metrics.get("Total Fixed Costs (€)", 0.0))
-    reservations = int(metrics.get("Reservations", 0))
     net_before_fixed = float(metrics.get("Net Income Before Fixed Costs (€)", 0.0))
 
     # Net profit (only available for Overall view)
@@ -1850,7 +2358,8 @@ def calculate_all_metrics(
     avg_stay_nights = (total_nights / reservations) if reservations > 0 else 0.0
 
     # Platform statistics
-    bookings_for_stats = clean_bookings(bookings_filtered.copy())
+    # Use all bookings for distributed calculation if available
+    bookings_for_stats = clean_bookings(bookings_for_overlap.copy() if use_distributed else bookings_filtered.copy())
     if "Platform" in bookings_for_stats.columns:
         bookings_for_stats["platform_normalized"] = bookings_for_stats["Platform"].replace(
             {"Booking": "Booking.com"}
@@ -1861,48 +2370,168 @@ def calculate_all_metrics(
     airbnb_mask = bookings_for_stats["platform_normalized"] == "Airbnb"
     booking_mask = bookings_for_stats["platform_normalized"] == "Booking.com"
 
-    airbnb_revenue = float(
-        bookings_for_stats.loc[airbnb_mask, "Revenue for stay (€)"].sum()
-        if "Revenue for stay (€)" in bookings_for_stats.columns
-        else 0.0
-    )
-    booking_revenue = float(
-        bookings_for_stats.loc[booking_mask, "Revenue for stay (€)"].sum()
-        if "Revenue for stay (€)" in bookings_for_stats.columns
-        else 0.0
-    )
-    airbnb_nights = int(
-        bookings_for_stats.loc[airbnb_mask, "Nights"].fillna(0).sum()
-        if "Nights" in bookings_for_stats.columns
-        else 0
-    )
-    booking_nights = int(
-        bookings_for_stats.loc[booking_mask, "Nights"].fillna(0).sum()
-        if "Nights" in bookings_for_stats.columns
-        else 0
-    )
-
-    airbnb_reservations = int(airbnb_mask.sum()) if not bookings_for_stats.empty else 0
-    booking_reservations = int(booking_mask.sum()) if not bookings_for_stats.empty else 0
+    # Calculate platform revenue using distributed logic if enabled
+    airbnb_overlap_nights = None
+    booking_overlap_nights = None
+    
+    if use_distributed and period_start_dt is not None and period_end_dt is not None:
+        if "Check-in date" in bookings_for_stats.columns and "Check-out date" in bookings_for_stats.columns:
+            # Calculate overlap nights for platform-specific bookings (calculate once, reuse)
+            airbnb_overlap_nights = bookings_for_stats[airbnb_mask].apply(
+                lambda row: calculate_overlap_nights(
+                    row.get("Check-in date"),
+                    row.get("Check-out date"),
+                    period_start_dt,
+                    period_end_dt
+                ),
+                axis=1
+            )
+            booking_overlap_nights = bookings_for_stats[booking_mask].apply(
+                lambda row: calculate_overlap_nights(
+                    row.get("Check-in date"),
+                    row.get("Check-out date"),
+                    period_start_dt,
+                    period_end_dt
+                ),
+                axis=1
+            )
+            
+            # Calculate distributed revenue for each platform
+            airbnb_revenue_series = bookings_for_stats[airbnb_mask].apply(
+                lambda row: calculate_distributed_revenue(row, airbnb_overlap_nights[row.name]),
+                axis=1
+            )
+            if len(airbnb_revenue_series) > 0:
+                airbnb_revenue = float(pd.Series(pd.to_numeric(airbnb_revenue_series.values, errors='coerce')).fillna(0).sum())
+            else:
+                airbnb_revenue = 0.0
+            
+            booking_revenue_series = bookings_for_stats[booking_mask].apply(
+                lambda row: calculate_distributed_revenue(row, booking_overlap_nights[row.name]),
+                axis=1
+            )
+            if len(booking_revenue_series) > 0:
+                booking_revenue = float(pd.Series(pd.to_numeric(booking_revenue_series.values, errors='coerce')).fillna(0).sum())
+            else:
+                booking_revenue = 0.0
+            
+            airbnb_nights = int(airbnb_overlap_nights.sum())
+            booking_nights = int(booking_overlap_nights.sum())
+            airbnb_reservations = int((airbnb_overlap_nights > 0).sum())
+            booking_reservations = int((booking_overlap_nights > 0).sum())
+        else:
+            # Fallback to original logic
+            airbnb_revenue = float(
+                bookings_for_stats.loc[airbnb_mask, "Revenue for stay (€)"].sum()
+                if "Revenue for stay (€)" in bookings_for_stats.columns
+                else 0.0
+            )
+            booking_revenue = float(
+                bookings_for_stats.loc[booking_mask, "Revenue for stay (€)"].sum()
+                if "Revenue for stay (€)" in bookings_for_stats.columns
+                else 0.0
+            )
+            airbnb_nights = int(
+                bookings_for_stats.loc[airbnb_mask, "Nights"].fillna(0).sum()
+                if "Nights" in bookings_for_stats.columns
+                else 0
+            )
+            booking_nights = int(
+                bookings_for_stats.loc[booking_mask, "Nights"].fillna(0).sum()
+                if "Nights" in bookings_for_stats.columns
+                else 0
+            )
+            airbnb_reservations = int(airbnb_mask.sum()) if not bookings_for_stats.empty else 0
+            booking_reservations = int(booking_mask.sum()) if not bookings_for_stats.empty else 0
+    else:
+        # Original logic for "All" selection
+        airbnb_revenue = float(
+            bookings_for_stats.loc[airbnb_mask, "Revenue for stay (€)"].sum()
+            if "Revenue for stay (€)" in bookings_for_stats.columns
+            else 0.0
+        )
+        booking_revenue = float(
+            bookings_for_stats.loc[booking_mask, "Revenue for stay (€)"].sum()
+            if "Revenue for stay (€)" in bookings_for_stats.columns
+            else 0.0
+        )
+        airbnb_nights = int(
+            bookings_for_stats.loc[airbnb_mask, "Nights"].fillna(0).sum()
+            if "Nights" in bookings_for_stats.columns
+            else 0
+        )
+        booking_nights = int(
+            bookings_for_stats.loc[booking_mask, "Nights"].fillna(0).sum()
+            if "Nights" in bookings_for_stats.columns
+            else 0
+        )
+        airbnb_reservations = int(airbnb_mask.sum()) if not bookings_for_stats.empty else 0
+        booking_reservations = int(booking_mask.sum()) if not bookings_for_stats.empty else 0
 
     airbnb_revenue_share = (airbnb_revenue / total_revenue * 100) if total_revenue > 0 else 0.0
     booking_revenue_share = (booking_revenue / total_revenue * 100) if total_revenue > 0 else 0.0
 
-    # Calculate platform-specific per-stay expenses
-    if "Per-stay expenses (€)" in bookings_for_stats.columns:
-        airbnb_per_stay_expenses = float(
-            bookings_for_stats.loc[airbnb_mask, "Per-stay expenses (€)"].fillna(0).sum()
-        )
-        booking_per_stay_expenses = float(
-            bookings_for_stats.loc[booking_mask, "Per-stay expenses (€)"].fillna(0).sum()
-        )
-        airbnb_net_before_fixed = airbnb_revenue - airbnb_per_stay_expenses
-        booking_net_before_fixed = booking_revenue - booking_per_stay_expenses
+    # Calculate platform-specific per-stay expenses (distributed if enabled)
+    if use_distributed and period_start_dt is not None and period_end_dt is not None and airbnb_overlap_nights is not None and booking_overlap_nights is not None:
+        if "Check-in date" in bookings_for_stats.columns and "Check-out date" in bookings_for_stats.columns:
+            # Calculate distributed per-stay expenses for each platform (reuse overlap_nights from above)
+            airbnb_per_stay_series = bookings_for_stats[airbnb_mask].apply(
+                lambda row: (
+                    (float(row.get("Per-stay expenses (€)", 0) or 0) / 
+                     max((pd.to_datetime(row.get("Check-out date")) - pd.to_datetime(row.get("Check-in date"))).days, 1))
+                    * airbnb_overlap_nights[row.name]
+                ) if not (pd.isna(row.get("Check-in date")) or pd.isna(row.get("Check-out date"))) else 0.0,
+                axis=1
+            )
+            if len(airbnb_per_stay_series) > 0:
+                airbnb_per_stay_expenses = float(pd.Series(pd.to_numeric(airbnb_per_stay_series.values, errors='coerce')).fillna(0).sum())
+            else:
+                airbnb_per_stay_expenses = 0.0
+            
+            booking_per_stay_series = bookings_for_stats[booking_mask].apply(
+                lambda row: (
+                    (float(row.get("Per-stay expenses (€)", 0) or 0) / 
+                     max((pd.to_datetime(row.get("Check-out date")) - pd.to_datetime(row.get("Check-in date"))).days, 1))
+                    * booking_overlap_nights[row.name]
+                ) if not (pd.isna(row.get("Check-in date")) or pd.isna(row.get("Check-out date"))) else 0.0,
+                axis=1
+            )
+            if len(booking_per_stay_series) > 0:
+                booking_per_stay_expenses = float(pd.Series(pd.to_numeric(booking_per_stay_series.values, errors='coerce')).fillna(0).sum())
+            else:
+                booking_per_stay_expenses = 0.0
+            airbnb_net_before_fixed = airbnb_revenue - airbnb_per_stay_expenses
+            booking_net_before_fixed = booking_revenue - booking_per_stay_expenses
+        else:
+            # Fallback
+            if "Per-stay expenses (€)" in bookings_for_stats.columns:
+                airbnb_per_stay_expenses = float(
+                    bookings_for_stats.loc[airbnb_mask, "Per-stay expenses (€)"].fillna(0).sum()
+                )
+                booking_per_stay_expenses = float(
+                    bookings_for_stats.loc[booking_mask, "Per-stay expenses (€)"].fillna(0).sum()
+                )
+            else:
+                airbnb_per_stay_expenses = 0.0
+                booking_per_stay_expenses = 0.0
+            airbnb_net_before_fixed = airbnb_revenue - airbnb_per_stay_expenses
+            booking_net_before_fixed = booking_revenue - booking_per_stay_expenses
     else:
-        airbnb_per_stay_expenses = 0.0
-        booking_per_stay_expenses = 0.0
-        airbnb_net_before_fixed = airbnb_revenue
-        booking_net_before_fixed = booking_revenue
+        # Original logic
+        if "Per-stay expenses (€)" in bookings_for_stats.columns:
+            airbnb_per_stay_expenses = float(
+                bookings_for_stats.loc[airbnb_mask, "Per-stay expenses (€)"].fillna(0).sum()
+            )
+            booking_per_stay_expenses = float(
+                bookings_for_stats.loc[booking_mask, "Per-stay expenses (€)"].fillna(0).sum()
+            )
+            airbnb_net_before_fixed = airbnb_revenue - airbnb_per_stay_expenses
+            booking_net_before_fixed = booking_revenue - booking_per_stay_expenses
+        else:
+            airbnb_per_stay_expenses = 0.0
+            booking_per_stay_expenses = 0.0
+            airbnb_net_before_fixed = airbnb_revenue
+            booking_net_before_fixed = booking_revenue
 
     # Guest statistics
     if "Total guests" in bookings_for_stats.columns:
@@ -2138,8 +2767,8 @@ def calculate_all_metrics(
         avg_stay_by_country = country_stats[["Country", "AvgNights"]].to_dict("records")
 
     # ========== CORE FINANCIAL & OCCUPANCY ==========
-    add_metric("Reservations", "Reservations", reservations, "", "Number of completed bookings in the selected period.")
-    add_metric("Total nights", "Total nights", total_nights, "", "Sum of all booked nights in the selected period.")
+    add_metric("Reservations", "Reservations", reservations, "", "Counts bookings that contributed at least one booked night to the selected period.")
+    add_metric("Total nights", "Total nights", total_nights, "", "Counts only the nights that fall inside the selected period, even if the booking started earlier.")
     add_metric("Occupancy (%)", "Occupancy (%)", occupancy_pct, "", "Share of available nights that were actually booked.")
     add_metric("Total revenue (€)", "Total revenue (€)", total_revenue, "€ ", "Total revenue from all stays in the selected period.")
     add_metric("Net Profit (€)", net_label, net_profit if net_profit is not None else net_before_fixed, "€ ", net_explanation)
@@ -2495,20 +3124,72 @@ def inject_metric_tooltip_css():
     st.markdown("""
     <style>
     /* Metric card container with tooltip support */
-    .metric-card-container {
-        position: relative;
-        padding: 1rem;
-        border-radius: 1rem;
-        border: 1px solid #333;
-        background: rgba(0,0,0,0.35);
-        box-shadow: 0 4px 10px rgba(0,0,0,0.3);
-        cursor: help;
-        transition: all 0.2s ease;
+.metric-card-container {
+    position: relative;
+    padding: 0.75rem 0.85rem;
+    border-radius: 1rem;
+    border: 1px solid #333;
+    background: rgba(0,0,0,0.35);
+    box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+    transition: all 0.2s ease;
+
+    /* Fix layout consistency */
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    min-height: 115px;   /* <-- set consistent height */
+}
+
+/* Fix description height so cards align */
+.metric-description {
+    min-height: 36px;   /* enough for two lines */
+    line-height: 1.2rem;
+    display: block;
+}
+
+    
+    /* Label area - consistent height (assume up to 2 lines) */
+    .metric-card-label {
+        min-height: 32px;
+        line-height: 1.4;
+    }
+    
+    /* Description area (tooltip text placeholder) */
+    .metric-tooltip-insight {
+        min-height: 38px;
+    }
+    
+    /* Value area - flexible growth */
+    .metric-card-value {
+        flex-grow: 1;
+        display: flex;
+        align-items: center;
+        min-height: 28px;
     }
     
     .metric-card-container:hover {
         border-color: #555;
         background: rgba(0,0,0,0.45);
+    }
+    
+    /* Month selector alignment - ensure buttons align with dropdown */
+    div[data-testid="column"]:has(button[key*="prev_month"]),
+    div[data-testid="column"]:has(button[key*="next_month"]) {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    
+    /* Month navigation buttons styling */
+    button[key*="prev_month"],
+    button[key*="next_month"] {
+        height: 38px;
+        min-height: 38px;
+        font-size: 1.1rem;
+        border-radius: 0.5rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
     }
     
     /* Info icon */
@@ -3036,8 +3717,8 @@ def kpi_card(label, value, prefix="", metric_key=None, explanation=None):
                 <div class="metric-tooltip-formula">{escape_html(formula)}</div>
                 <div class="metric-tooltip-insight">{escape_html(insight)}</div>
             </div>
-            <div style="font-size:0.9rem;color:#ccc;">{escape_html(label)}</div>
-            <div style="font-size:1.5rem;font-weight:600;margin-top:0.3rem;color:#fff;">
+            <div class="metric-card-label" style="font-size:0.9rem;color:#ccc;min-height:32px;line-height:1.4;">{escape_html(label)}</div>
+            <div class="metric-card-value" style="font-size:1.5rem;font-weight:600;margin-top:0.3rem;color:#fff;flex-grow:1;display:flex;align-items:center;">
                 {escape_html(value_str)}
             </div>
         </div>
@@ -3728,6 +4409,7 @@ def render_report(
         selected_year,
         start_date=report_start_date,
         end_date=report_end_date,
+        bookings_all=bookings,  # Pass all bookings for overlap calculation
     )
     
     # Render metrics
@@ -3986,7 +4668,113 @@ if page == "Dashboard":
     all_years = sorted(set(available_years_bookings) | set(available_years_costs))
     year_options = ["All", "Custom range"] + [str(y) for y in all_years]
 
-    selected_year = st.selectbox("Select period", year_options, index=0)
+    # Initialize month selection in session state
+    if "selected_month" not in st.session_state:
+        st.session_state["selected_month"] = None
+    if "selected_year_for_month" not in st.session_state:
+        st.session_state["selected_year_for_month"] = None
+
+    # Period selection row
+    period_col1, period_col2 = st.columns([1, 1.5])
+    
+    with period_col1:
+        # Get default index based on session state or current selection
+        default_index = 0
+        if "dashboard_period_select" in st.session_state:
+            selected_value = st.session_state["dashboard_period_select"]
+            if selected_value in year_options:
+                default_index = year_options.index(selected_value)
+        
+        selected_year = st.selectbox("Select period", year_options, index=default_index, key="dashboard_period_select")
+    
+    # Determine if we should show month selector
+    show_month_selector = False
+    selected_year_int = None
+    if selected_year not in ["All", "Custom range"]:
+        selected_year_int = int(selected_year)
+        show_month_selector = True
+        
+        # Reset month if year changed
+        if st.session_state.get("selected_year_for_month") != selected_year_int:
+            st.session_state["selected_month"] = None
+            st.session_state["selected_year_for_month"] = selected_year_int
+    else:
+        # Reset month selection when switching to "All" or "Custom range"
+        st.session_state["selected_month"] = None
+        st.session_state["selected_year_for_month"] = None
+    
+    # Handle pending month navigation (set by arrow clicks before rerun)
+    month_options_full = ["All months"] + [calendar.month_name[i] for i in range(1, 13)]
+    if "month_nav_action" in st.session_state:
+        nav_action = st.session_state.pop("month_nav_action")
+        current_month_name = st.session_state.get("selected_month", "All months")
+        base_year = st.session_state.get("selected_year_for_month", selected_year if selected_year not in ["All", "Custom range"] else None)
+        try:
+            if current_month_name in month_options_full and current_month_name != "All months" and base_year is not None:
+                current_idx = month_options_full.index(current_month_name)
+                if nav_action == "prev":
+                    new_year, new_month = go_to_previous_month(int(base_year), current_idx)
+                elif nav_action == "next":
+                    new_year, new_month = go_to_next_month(int(base_year), current_idx)
+                else:
+                    new_year, new_month = int(base_year), current_idx
+                st.session_state["selected_month"] = calendar.month_name[new_month]
+                st.session_state["selected_year_for_month"] = new_year
+                st.session_state["selected_year"] = new_year
+                # Pre-set year dropdown before it renders
+                st.session_state["dashboard_period_select"] = str(new_year)
+        except Exception:
+            pass
+
+    # Month selector (only shown when a year is selected)
+    selected_month = None
+    if show_month_selector:
+        with period_col2:
+            month_options = month_options_full
+            
+            # Resolve current month from session (default to All months)
+            current_month_name = st.session_state.get("selected_month", "All months")
+            if current_month_name not in month_options:
+                current_month_name = "All months"
+            current_month_index = month_options.index(current_month_name)
+
+            # Centered compact row: [◀] [Select Month] [▶]
+            pad_left, month_block, pad_right = st.columns([1, 3, 1])
+            with month_block:
+                col_prev, col_month, col_next = st.columns([1, 4, 1], gap="small")
+
+                # Month dropdown (center)
+                with col_month:
+                    selected_month_str = st.selectbox(
+                        "Select Month",
+                        options=month_options,
+                        index=current_month_index,
+                        key="dashboard_month_select",
+                        label_visibility="visible",
+                    )
+                    st.session_state["selected_month"] = selected_month_str
+                    st.session_state["selected_year"] = selected_year_int
+                    st.session_state["selected_year_for_month"] = selected_year_int
+
+                # Left arrow
+                with col_prev:
+                    if selected_month_str != "All months":
+                        if st.button("◀", key="prev_month", help="Previous month", use_container_width=True):
+                            st.session_state["month_nav_action"] = "prev"
+                            st.rerun()
+
+                # Right arrow
+                with col_next:
+                    if selected_month_str != "All months":
+                        if st.button("▶", key="next_month", help="Next month", use_container_width=True):
+                            st.session_state["month_nav_action"] = "next"
+                            st.rerun()
+
+            # Convert month name to number for filtering
+            if selected_month_str != "All months":
+                selected_month = month_options.index(selected_month_str)  # 1-12
+            else:
+                selected_month = None
 
     # Compute default custom date range: earliest check-in to latest check-out
     start_date_default = None
@@ -4023,10 +4811,18 @@ if page == "Dashboard":
                 key="dashboard_end_date",
             )
 
+    # Determine effective period boundaries for metrics calculation
+    effective_period_start = None
+    effective_period_end = None
+    
     # Decide which filter to apply
     if use_custom_range and start_date is not None and end_date is not None:
         # Custom date range overrides year selection
         selected_year_int = None
+        selected_month = None
+        effective_period_start = pd.Timestamp(start_date)
+        effective_period_end = pd.Timestamp(end_date)
+        
         bookings_filtered = filter_bookings_by_period(
             bookings,
             period_type="date_range",
@@ -4046,10 +4842,38 @@ if page == "Dashboard":
             start_date=start_date,
             end_date=end_date,
         )
-    else:
-        # Fall back to year selection logic
-        if selected_year not in ["All", "Custom range"]:
-            selected_year_int = int(selected_year)
+    elif selected_year not in ["All", "Custom range"]:
+        # Year selected - check if month is also selected
+        # Note: selected_month is set above in the month selector section
+        if 'selected_month' not in locals():
+            selected_month = None
+        
+        if selected_month is not None and selected_month != 0:
+            # Specific month selected (selected_month is 1-12, where 1=January)
+            effective_period_start, effective_period_end = get_month_range(selected_year_int, selected_month)
+            
+            bookings_filtered = filter_bookings_by_period(
+                bookings,
+                period_type="month_year",
+                year=selected_year_int,
+                month=selected_month,
+            )
+            monthly_costs_filtered = filter_monthly_costs_by_period(
+                monthly_costs,
+                period_type="month_year",
+                year=selected_year_int,
+                month=selected_month,
+            )
+            nights_available = compute_nights_available(
+                bookings_filtered,
+                selected_year=selected_year_int,
+                period_type="month_year",
+                month=selected_month,
+            )
+        else:
+            # Year selected, but "All months" - use entire year
+            effective_period_start, effective_period_end = get_year_range(selected_year_int)
+            
             bookings_filtered = filter_bookings_by_period(
                 bookings,
                 period_type="year",
@@ -4065,12 +4889,17 @@ if page == "Dashboard":
                 selected_year=selected_year_int,
                 period_type="year",
             )
-        else:
-            selected_year_int = None
-            bookings_filtered = bookings
-            # For "All" years, use all monthly costs (no filter)
-            monthly_costs_filtered = monthly_costs
-            nights_available = compute_nights_available(bookings_filtered, None)
+    else:
+        # "All" selected
+        selected_year_int = None
+        selected_month = None
+        effective_period_start = None
+        effective_period_end = None
+        
+        bookings_filtered = bookings
+        # For "All" years, use all monthly costs (no filter)
+        monthly_costs_filtered = monthly_costs
+        nights_available = compute_nights_available(bookings_filtered, None)
 
     # ===== TARGET REVENUE HEADER ROW (renders at very top via header_container) =====
     with header_container:
@@ -4153,25 +4982,16 @@ if page == "Dashboard":
         initialize_custom_graphs()
 
         # Calculate all metrics using the comprehensive function
-        # Determine start_date and end_date for metrics calculation
-        metrics_start_date = None
-        metrics_end_date = None
-        if use_custom_range and start_date is not None and end_date is not None:
-            metrics_start_date = pd.Timestamp(start_date)
-            metrics_end_date = pd.Timestamp(end_date)
-        elif selected_year_int is not None:
-            # For year selection, use year boundaries
-            metrics_start_date = pd.Timestamp(year=selected_year_int, month=1, day=1)
-            metrics_end_date = pd.Timestamp(year=selected_year_int, month=12, day=31)
-        
+        # Use effective_period_start and effective_period_end (already calculated above)
         metric_info = calculate_all_metrics(
             bookings_filtered,
             monthly_costs_filtered,
             view_mode,
             nights_available,
             selected_year_int,
-            start_date=metrics_start_date,
-            end_date=metrics_end_date,
+            start_date=effective_period_start,
+            end_date=effective_period_end,
+            bookings_all=bookings,  # Pass all bookings for overlap calculation
         )
 
         # ----- Show core metrics -----
@@ -4977,6 +5797,7 @@ elif page == "Reports":
             "Overall",
             compute_nights_available(bookings, None),
             None,
+            bookings_all=bookings,  # Pass all bookings for overlap calculation
         )
         all_metric_keys = list(sample_metric_info.keys())
         
