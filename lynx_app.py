@@ -6131,10 +6131,12 @@ elif page == "Bookings":
                 else:
                     country = country_choice
 
-                push_to_git = st.checkbox(
+                st.checkbox(
                     "Push this booking to GitHub after save",
-                    value=False,
+                    value=True,
+                    disabled=True,
                     key="push_new_booking_to_git",
+                    help="Always enabled: every saved booking is pushed to GitHub automatically.",
                 )
 
                 commit_message = st.text_input(
@@ -6273,23 +6275,19 @@ elif page == "Bookings":
                     )
                     save_data(bookings, monthly_costs, toiletries, FILE_PATH)
 
-                    if push_to_git:
-                        git_repo_path = Path(__file__).resolve().parent
-                        success, git_message = commit_and_push_booking(
-                            git_repo_path,
-                            [FILE_PATH],
-                            commit_message or "Add new booking via Streamlit app",
-                        )
-                        if success:
-                            st.success("New booking added and pushed to GitHub ✅")
-                            st.toast("Booking successfully saved and pushed to GitHub.", icon="🚀")
-                        else:
-                            st.warning(
-                                f"Booking saved, but GitHub push failed: {git_message}"
-                            )
+                    git_repo_path = Path(__file__).resolve().parent
+                    success, git_message = commit_and_push_booking(
+                        git_repo_path,
+                        [FILE_PATH],
+                        commit_message or "Add new booking via Streamlit app",
+                    )
+                    if success:
+                        st.success("New booking added and pushed to GitHub ✅")
+                        st.toast("Booking successfully saved and pushed to GitHub.", icon="🚀")
                     else:
-                        st.success("New booking added and saved ✅")
-                        st.toast("Booking successfully saved.", icon="✅")
+                        st.warning(
+                            f"Booking saved, but GitHub push failed: {git_message}"
+                        )
 
                     st.rerun()  # Refresh form after successful save
 
