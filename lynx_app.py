@@ -1,3 +1,6 @@
+import os
+import shutil
+import subprocess
 import streamlit as st
 import pandas as pd
 from pathlib import Path
@@ -1115,6 +1118,53 @@ def save_data(bookings: pd.DataFrame,
         bookings.to_excel(writer, sheet_name="Bookings", index=False)
         monthly_costs.to_excel(writer, sheet_name="Monthly_Costs", index=False)
         toiletries.to_excel(writer, sheet_name="Toiletries", index=False)
+
+
+def run_git_command(args: list[str], repo_path: Path) -> tuple[bool, str]:
+    try:
+        completed = subprocess.run(
+            args,
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            return False, completed.stderr.strip() or completed.stdout.strip()
+        return True, completed.stdout.strip()
+    except Exception as exc:
+        return False, str(exc)
+
+
+def get_current_git_branch(repo_path: Path) -> Optional[str]:
+    success, output = run_git_command(["git", "branch", "--show-current"], repo_path)
+    return output.strip() if success else None
+
+
+def commit_and_push_booking(repo_path: Path, file_paths: list[Path], commit_message: str) -> tuple[bool, str]:
+    if shutil.which("git") is None:
+        return False, "Git is not available on the app host."
+
+    paths = [str(p) for p in file_paths]
+    success, output = run_git_command(["git", "add", "--"] + paths, repo_path)
+    if not success:
+        return False, f"Git add failed: {output}"
+
+    success, output = run_git_command(["git", "commit", "-m", commit_message], repo_path)
+    if not success:
+        if "nothing to commit" in output.lower():
+            return False, "Nothing to commit. The booking file did not change or the change was already committed."
+        return False, f"Git commit failed: {output}"
+
+    branch = get_current_git_branch(repo_path)
+    if not branch:
+        return False, "Unable to determine current Git branch."
+
+    success, output = run_git_command(["git", "push", "origin", branch], repo_path)
+    if not success:
+        return False, f"Git push failed: {output}"
+
+    return True, output
 
 
 def get_year_range(year: int) -> tuple[pd.Timestamp, pd.Timestamp]:
@@ -6081,6 +6131,22 @@ elif page == "Bookings":
                 else:
                     country = country_choice
 
+                push_to_git = st.checkbox(
+                    "Push this booking to GitHub after save",
+                    value=False,
+                    key="push_new_booking_to_git",
+                )
+
+                commit_message = st.text_input(
+                    "Git commit message",
+                    value=(
+                        f"Add new booking via Streamlit app: {guest_name} - {country}"
+                        if guest_name and country else
+                        "Add new booking via Streamlit app"
+                    ),
+                    key="git_commit_message",
+                )
+
                 # Use text input for revenue to allow clearing placeholder on focus
                 # Text input with placeholder - when clicked, placeholder disappears and user can type fresh number
                 # Don't use key to avoid session state conflicts - form's clear_on_submit=False handles preservation
@@ -6206,8 +6272,25 @@ elif page == "Bookings":
                         [bookings, pd.DataFrame([new_row])], ignore_index=True
                     )
                     save_data(bookings, monthly_costs, toiletries, FILE_PATH)
-                    st.success("New booking added and saved ✅")
-                    st.toast("Booking successfully saved.", icon="✅")
+
+                    if push_to_git:
+                        git_repo_path = Path(__file__).resolve().parent
+                        success, git_message = commit_and_push_booking(
+                            git_repo_path,
+                            [FILE_PATH],
+                            commit_message or "Add new booking via Streamlit app",
+                        )
+                        if success:
+                            st.success("New booking added and pushed to GitHub ✅")
+                            st.toast("Booking successfully saved and pushed to GitHub.", icon="🚀")
+                        else:
+                            st.warning(
+                                f"Booking saved, but GitHub push failed: {git_message}"
+                            )
+                    else:
+                        st.success("New booking added and saved ✅")
+                        st.toast("Booking successfully saved.", icon="✅")
+
                     st.rerun()  # Refresh form after successful save
 
     # ----- Edit & delete existing bookings -----
