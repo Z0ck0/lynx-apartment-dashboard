@@ -6040,7 +6040,7 @@ elif page == "Bookings":
                 common_countries = [
                     "North Macedonia", "Serbia", "Bulgaria", "Greece", "Albania",
                     "Kosovo", "Turkey", "Germany", "Switzerland", "Italy",
-                    "Slovenia", "Croatia", "Austria",
+                    "Slovenia", "Croatia", "Austria", "Hungary",
                 ]
 
                 add_country_label = "+ Add country"
