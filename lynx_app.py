@@ -1,4 +1,5 @@
 import os
+import base64
 import shutil
 import subprocess
 import streamlit as st
@@ -7,12 +8,18 @@ from pathlib import Path
 import calendar
 import altair as alt
 import json
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
 
 
 # 🔧 CONFIG
 FILE_PATH = Path("Lynx Apartment Tracker.xlsx")
+GITHUB_DEFAULT_OWNER = "Z0ck0"
+GITHUB_DEFAULT_REPO = "lynx-apartment-dashboard"
+GITHUB_DEFAULT_BRANCH = "main"
 CUSTOM_METRICS_FILE = Path("lynx_custom_metrics.json")
 REPORT_TEMPLATES_FILE = Path("lynx_report_templates.json")
 CUSTOM_GRAPHS_FILE = Path("lynx_custom_graphs.json")
@@ -1141,6 +1148,102 @@ def get_current_git_branch(repo_path: Path) -> Optional[str]:
     return output.strip() if success else None
 
 
+def get_github_config() -> Optional[dict]:
+    """Read GitHub API settings from Streamlit secrets (required on Streamlit Cloud)."""
+    try:
+        gh = st.secrets.get("github")
+    except Exception:
+        return None
+    if not gh:
+        return None
+    token = (gh.get("token") or "").strip()
+    if not token:
+        return None
+    return {
+        "token": token,
+        "owner": (gh.get("owner") or GITHUB_DEFAULT_OWNER).strip(),
+        "repo": (gh.get("repo") or GITHUB_DEFAULT_REPO).strip(),
+        "branch": (gh.get("branch") or GITHUB_DEFAULT_BRANCH).strip(),
+    }
+
+
+def _github_api_request(
+    method: str,
+    url: str,
+    token: str,
+    payload: Optional[dict] = None,
+) -> tuple[int, dict, str]:
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "lynx-apartment-dashboard",
+    }
+    data = None
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            body = response.read().decode("utf-8")
+            return response.status, (json.loads(body) if body else {}), ""
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="replace")
+        try:
+            err_json = json.loads(err_body) if err_body else {}
+        except json.JSONDecodeError:
+            err_json = {}
+        message = err_json.get("message") or err_body or str(exc)
+        return exc.code, err_json, message
+    except Exception as exc:
+        return 0, {}, str(exc)
+
+
+def push_file_via_github_api(file_path: Path, commit_message: str, config: dict) -> tuple[bool, str]:
+    """Upload a file to GitHub immediately via the Contents API (works on Streamlit Cloud)."""
+    if not file_path.is_file():
+        return False, f"File not found: {file_path}"
+
+    owner = config["owner"]
+    repo = config["repo"]
+    branch = config["branch"]
+    token = config["token"]
+    repo_path = str(file_path).replace("\\", "/")
+    api_path = urllib.parse.quote(repo_path, safe="")
+    base_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{api_path}"
+
+    status, data, err = _github_api_request(
+        "GET",
+        f"{base_url}?ref={urllib.parse.quote(branch)}",
+        token,
+    )
+    sha = None
+    if status == 200:
+        sha = data.get("sha")
+    elif status != 404:
+        return False, f"GitHub read failed ({status}): {err}"
+
+    with open(file_path, "rb") as handle:
+        encoded = base64.b64encode(handle.read()).decode("ascii")
+
+    payload: dict = {
+        "message": commit_message,
+        "content": encoded,
+        "branch": branch,
+    }
+    if sha:
+        payload["sha"] = sha
+
+    status, data, err = _github_api_request("PUT", base_url, token, payload)
+    if status not in (200, 201):
+        return False, f"GitHub upload failed ({status}): {err}"
+
+    commit_sha = (data.get("commit") or {}).get("sha", "")
+    return True, f"Pushed to GitHub ({owner}/{repo}@{branch}, commit {commit_sha[:7]})."
+
+
 def commit_and_push_booking(repo_path: Path, file_paths: list[Path], commit_message: str) -> tuple[bool, str]:
     if shutil.which("git") is None:
         return False, "Git is not available on the app host."
@@ -1165,6 +1268,38 @@ def commit_and_push_booking(repo_path: Path, file_paths: list[Path], commit_mess
         return False, f"Git push failed: {output}"
 
     return True, output
+
+
+def push_tracker_to_github(commit_message: str) -> tuple[bool, str]:
+    """
+    Push Lynx Apartment Tracker.xlsx to GitHub.
+    Uses GitHub API when [github] secrets are configured (Streamlit Cloud),
+    otherwise falls back to local git push.
+    """
+    github_config = get_github_config()
+    if github_config:
+        return push_file_via_github_api(FILE_PATH, commit_message, github_config)
+
+    git_repo_path = Path(__file__).resolve().parent
+    return commit_and_push_booking(git_repo_path, [FILE_PATH], commit_message)
+
+
+def show_github_push_result(success: bool, message: str, context: str = "Changes") -> None:
+    if success:
+        st.success(f"{context} saved and pushed to GitHub ✅")
+        st.toast("Lynx Apartment Tracker.xlsx updated on GitHub.", icon="🚀")
+    else:
+        st.warning(f"{context} saved locally, but GitHub push failed: {message}")
+        if not get_github_config():
+            st.info(
+                "On Streamlit Cloud, add a GitHub token in app Secrets:\n\n"
+                "```toml\n[github]\n"
+                'token = "ghp_..."\n'
+                f'owner = "{GITHUB_DEFAULT_OWNER}"\n'
+                f'repo = "{GITHUB_DEFAULT_REPO}"\n'
+                f'branch = "{GITHUB_DEFAULT_BRANCH}"\n'
+                "```"
+            )
 
 
 def get_year_range(year: int) -> tuple[pd.Timestamp, pd.Timestamp]:
@@ -6275,19 +6410,10 @@ elif page == "Bookings":
                     )
                     save_data(bookings, monthly_costs, toiletries, FILE_PATH)
 
-                    git_repo_path = Path(__file__).resolve().parent
-                    success, git_message = commit_and_push_booking(
-                        git_repo_path,
-                        [FILE_PATH],
+                    success, git_message = push_tracker_to_github(
                         commit_message or "Add new booking via Streamlit app",
                     )
-                    if success:
-                        st.success("New booking added and pushed to GitHub ✅")
-                        st.toast("Booking successfully saved and pushed to GitHub.", icon="🚀")
-                    else:
-                        st.warning(
-                            f"Booking saved, but GitHub push failed: {git_message}"
-                        )
+                    show_github_push_result(success, git_message, context="New booking")
 
                     st.rerun()  # Refresh form after successful save
 
@@ -6445,8 +6571,14 @@ elif page == "Bookings":
             edited_bookings["Notes"] = edited_bookings["Notes"].fillna("")
 
         save_data(edited_bookings, monthly_costs, toiletries, FILE_PATH)
-        st.success("Bookings updated and saved ✅")
-        st.toast("Bookings table saved.", icon="✅")
+
+        success, git_message = push_tracker_to_github(
+            "Update bookings via Streamlit app",
+        )
+        show_github_push_result(success, git_message, context="Bookings")
+        if success:
+            load_data.clear()
+            st.rerun()
 
 
 # -------- FIXED COSTS PAGE --------
